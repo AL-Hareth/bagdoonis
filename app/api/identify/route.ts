@@ -1,11 +1,14 @@
+import { isJpegDataUrl, isSameOrigin, rateLimited, readBodyCapped } from "@/app/lib/guard";
 import { SYSTEM_PROMPT, USER_PROMPT } from "@/app/lib/prompt";
 import { IdentifyResult, type IdentifyError } from "@/app/lib/schema";
 
 export const maxDuration = 30;
 
 const BASE_URL = process.env.AI_BASE_URL || "https://api.groq.com/openai/v1";
-const MAX_IMAGE_CHARS = 4_000_000; // ~3MB of base64, under Vercel's 4.5MB body limit
-const DATA_URL = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+// Client sends a ≤1024px JPEG (typically 100–400KB); these caps leave headroom
+// while staying under Vercel's 4.5MB body limit.
+const MAX_BODY_BYTES = 3_000_000;
+const MAX_IMAGE_BYTES = 2_000_000;
 
 class ProviderError extends Error {
   constructor(public status: number, message: string) {
@@ -64,15 +67,19 @@ export async function POST(request: Request) {
     return fail("failed", 500);
   }
 
+  if (!isSameOrigin(request)) return fail("failed", 403);
+  if (rateLimited(request)) return fail("busy", 429);
+
+  const raw = await readBodyCapped(request, MAX_BODY_BYTES);
+  if (raw === null) return fail("bad_image", 413);
+
   let image: unknown;
   try {
-    ({ image } = await request.json());
+    ({ image } = JSON.parse(raw));
   } catch {
     return fail("bad_image", 400);
   }
-  if (typeof image !== "string" || image.length > MAX_IMAGE_CHARS || !DATA_URL.test(image)) {
-    return fail("bad_image", 400);
-  }
+  if (!isJpegDataUrl(image, MAX_IMAGE_BYTES)) return fail("bad_image", 400);
 
   const models = [process.env.AI_MODEL, process.env.AI_FALLBACK_MODEL].filter(
     (m): m is string => Boolean(m),
