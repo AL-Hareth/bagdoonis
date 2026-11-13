@@ -1,14 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { IdentifyError, IdentifyResult, Verdict } from "@/app/lib/schema";
+import type { IdentifyError, IdentifyResponse, Verdict } from "@/app/lib/schema";
 import { resizeImage } from "@/app/lib/resizeImage";
-import { CameraIcon, CorianderLeaf, ParsleyLeaf, RetakeIcon, ShareIcon } from "./icons";
+import { CameraIcon, CorianderLeaf, GalleryIcon, ParsleyLeaf, RetakeIcon, ShareIcon } from "./icons";
 
 type State =
   | { kind: "idle" }
   | { kind: "analyzing"; photo: string }
-  | { kind: "result"; photo: string; result: IdentifyResult }
+  | { kind: "result"; photo: string; result: IdentifyResponse }
   | { kind: "error"; photo?: string; message: string };
 
 const VERDICTS: Record<Verdict, { label: string; latin: string; color: string }> = {
@@ -39,7 +39,8 @@ const num = new Intl.NumberFormat("ar-EG");
 export default function Identifier() {
   const [state, setState] = useState<State>({ kind: "idle" });
   const [dragging, setDragging] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const analyze = useCallback(async (photo: string) => {
@@ -62,7 +63,7 @@ export default function Identifier() {
         setState({ kind: "error", photo, message: ERRORS[key] ?? ERRORS.failed });
         return;
       }
-      setState({ kind: "result", photo, result: data as IdentifyResult });
+      setState({ kind: "result", photo, result: data as IdentifyResponse });
       // Haptic thump timed with the stamp landing.
       setTimeout(() => navigator.vibrate?.([14, 50, 28]), 300);
     } catch {
@@ -87,7 +88,17 @@ export default function Identifier() {
     setState({ kind: "idle" });
   }, []);
 
-  const pick = useCallback(() => inputRef.current?.click(), []);
+  // Some Android browsers only offer files unless `capture` is set, so the camera and
+  // the gallery get separate inputs. Desktop browsers ignore `capture`.
+  const pick = useCallback(() => cameraRef.current?.click(), []);
+  const pickGallery = useCallback(() => galleryRef.current?.click(), []);
+  const onInput = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      handleFile(e.target.files?.[0]);
+      e.target.value = "";
+    },
+    [handleFile],
+  );
 
   // Desktop niceties: drag-and-drop anywhere, and paste from clipboard.
   useEffect(() => {
@@ -129,22 +140,12 @@ export default function Identifier() {
 
   return (
     <main className="relative mx-auto flex min-h-dvh max-w-md flex-col overflow-hidden px-5 pt-[max(env(safe-area-inset-top),1.25rem)] pb-[max(env(safe-area-inset-bottom),1.25rem)]">
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        className="sr-only"
-        tabIndex={-1}
-        aria-hidden
-        onChange={(e) => {
-          handleFile(e.target.files?.[0]);
-          e.target.value = "";
-        }}
-      />
+      <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="sr-only" tabIndex={-1} aria-hidden onChange={onInput} />
+      <input ref={galleryRef} type="file" accept="image/*" className="sr-only" tabIndex={-1} aria-hidden onChange={onInput} />
 
-      {state.kind === "idle" && <Idle onPick={pick} />}
+      {state.kind === "idle" && <Idle onPick={pick} onGallery={pickGallery} />}
       {state.kind === "analyzing" && <Analyzing photo={state.photo} onCancel={reset} />}
-      {state.kind === "result" && <Result photo={state.photo} result={state.result} onAgain={pick} />}
+      {state.kind === "result" && <Result photo={state.photo} result={state.result} onAgain={pick} onGallery={pickGallery} />}
       {state.kind === "error" && (
         <ErrorView
           photo={state.photo}
@@ -165,7 +166,7 @@ export default function Identifier() {
 
 /* ───────────────────────── Idle ───────────────────────── */
 
-function Idle({ onPick }: { onPick: () => void }) {
+function Idle({ onPick, onGallery }: { onPick: () => void; onGallery: () => void }) {
   return (
     <>
       <CorianderLeaf className="pointer-events-none absolute -top-6 -left-10 size-44 -rotate-12 text-leaf/10" />
@@ -185,13 +186,13 @@ function Idle({ onPick }: { onPick: () => void }) {
         </p>
       </header>
 
-      <div className="relative flex flex-1 items-center justify-center py-8">
+      <div className="relative flex flex-1 flex-col items-center justify-center gap-3 py-6">
         <button
           type="button"
           onClick={onPick}
           autoFocus
           className="group animate-rise relative grid size-64 place-items-center rounded-full outline-none [animation-delay:120ms]"
-          aria-label="صوّر الورقة أو اختر صورة"
+          aria-label="صوّر الورقة بالكاميرا"
         >
           {/* Rotating seal text */}
           <svg viewBox="0 0 200 200" className="animate-spin-slow absolute inset-0 size-full text-ink" aria-hidden>
@@ -209,6 +210,7 @@ function Idle({ onPick }: { onPick: () => void }) {
             <span className="font-display text-2xl">صوّر الورقة</span>
           </span>
         </button>
+        <GalleryLink onClick={onGallery} />
       </div>
 
       <footer className="animate-rise space-y-4 [animation-delay:220ms]">
@@ -223,13 +225,26 @@ function Idle({ onPick }: { onPick: () => void }) {
           </span>
         </div>
         <p className="text-center text-xs text-ink/50">
-          <span className="pointer-fine:hidden">من الكاميرا أو الاستديو</span>
-          <span className="hidden pointer-fine:inline">أو اسحب صورة هنا، أو الصقها بـ Ctrl+V</span>
-          <span className="mx-2">·</span>
+          <span className="hidden pointer-fine:inline">
+            أو اسحب صورة هنا، أو الصقها بـ Ctrl+V<span className="mx-2">·</span>
+          </span>
           <span className="text-tomato">*</span>والنساء مرحّب فيهن
         </p>
       </footer>
     </>
+  );
+}
+
+function GalleryLink({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex min-h-12 items-center justify-center gap-2 self-center px-4 text-ink/70 underline decoration-ink/30 underline-offset-4"
+    >
+      <GalleryIcon className="size-5" />
+      أو اختر من الاستديو
+    </button>
   );
 }
 
@@ -276,7 +291,17 @@ function Analyzing({ photo, onCancel }: { photo: string; onCancel: () => void })
 
 /* ───────────────────────── Result ───────────────────────── */
 
-function Result({ photo, result, onAgain }: { photo: string; result: IdentifyResult; onAgain: () => void }) {
+function Result({
+  photo,
+  result,
+  onAgain,
+  onGallery,
+}: {
+  photo: string;
+  result: IdentifyResponse;
+  onAgain: () => void;
+  onGallery: () => void;
+}) {
   const v = VERDICTS[result.verdict];
   const unclear = result.verdict === "unclear";
   // Result never renders during SSR (state starts idle), so navigator is safe here.
@@ -322,6 +347,20 @@ function Result({ photo, result, onAgain }: { photo: string; result: IdentifyRes
                 style={{ width: `${result.confidence}%` }}
               />
             </div>
+            {result.voters > 1 && (
+              <p className="mt-2 flex items-center gap-1.5 text-sm text-ink/60">
+                <span className="flex gap-1" aria-hidden>
+                  {Array.from({ length: result.voters }, (_, i) => (
+                    <span key={i} className={`size-2 rounded-full ${i < result.votes ? "bg-leaf" : "bg-paper-deep"}`} />
+                  ))}
+                </span>
+                {result.votes > 1
+                  ? `اتفق عليها ${num.format(result.votes)} من ${num.format(result.voters)} نماذج`
+                  : result.answered > 1
+                    ? "النماذج اختلفت، واخترنا الأكثر ثقة"
+                    : "جاوب نموذج واحد بس هالمرة"}
+              </p>
+            )}
           </div>
         )}
 
@@ -370,6 +409,7 @@ function Result({ photo, result, onAgain }: { photo: string; result: IdentifyRes
             </button>
           )}
         </div>
+        <GalleryLink onClick={onGallery} />
       </div>
     </section>
   );
